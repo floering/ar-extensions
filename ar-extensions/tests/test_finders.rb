@@ -3,7 +3,7 @@ require File.expand_path( File.join( File.dirname( __FILE__ ), 'test_helper' ) )
 class FindersTest< TestCaseSuperClass
   include ActiveRecord::ConnectionAdapters
   self.fixture_path = File.join( File.dirname( __FILE__ ), 'fixtures/unit/active_record_base_finders' )
-  self.fixtures 'developers', 'books'
+  self.fixtures 'developers', 'books', 'addresses', 'teams'
 
   def setup
     @connection = ActiveRecord::Base.connection
@@ -92,6 +92,80 @@ class FindersTest< TestCaseSuperClass
    
     developers = Developer.find( :all, :conditions=>{ :name_like=>['ach', 'oe'] } )
     assert_equal( 2, developers.size )
+  end
+
+  def test_find_with_like_on_included_table
+    developers = Developer.find( :all, :include => :addresses )
+    assert_equal 3, developers.size
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.city' => 'Charlevoix' } )
+    assert_equal 1, developers.size
+    vac_addr = Address.find(3)
+    assert_equal vac_addr, developers.first.addresses.first
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.city_like' => 'arlev' } )
+    assert_equal 1, developers.size
+    assert_equal vac_addr, developers.first.addresses.first
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.city_like' => [ 'arlev', 'nomatch' ] } )
+    assert_equal 1, developers.size
+    assert_equal vac_addr, developers.first.addresses.first
+  end
+
+  def test_find_with_starts_with_on_included_table
+    vac_addr = Address.find(3)
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.city_starts_with' => 'Char' } )
+    assert_equal 1, developers.size
+    assert_equal vac_addr, developers.first.addresses.first
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.city_starts_with' => [ 'Char', 'nomatch' ] } )
+    assert_equal 1, developers.size
+    assert_equal vac_addr, developers.first.addresses.first
+  end
+
+  def test_find_with_ends_with_on_included_table
+    vac_addr = Address.find(3)
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.city_ends_with' => 'voix' } )
+    assert_equal 1, developers.size
+    assert_equal vac_addr, developers.first.addresses.first
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.city_ends_with' => [ 'voix', 'nomatch' ] } )
+    assert_equal 1, developers.size
+    assert_equal vac_addr, developers.first.addresses.first
+  end
+
+  def test_find_with_greater_than_on_included_table
+    vac_addr = Address.find(3)
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.zip_gt' => 49600 } )
+    assert_equal 1, developers.size
+    assert_equal vac_addr, developers.first.addresses.first
+  end
+
+  def test_find_with_greater_than_equal_on_included_table
+    vac_addr = Address.find(3)
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.zip_gte' => 49600 } )
+    assert_equal 1, developers.size
+    assert_equal vac_addr, developers.first.addresses.first
+  end
+
+  def test_find_with_less_than_on_included_table
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.zip_lt' => 49600 } )
+    assert_equal 2, developers.size
+  end
+
+  def test_find_with_less_than_equal_on_included_table
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.zip_lte' => 49600 } )
+    assert_equal 2, developers.size
+  end
+
+  def test_find_array_on_included_table
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.id' => [1,3] } )
+    assert_equal 2, developers.size
+  end
+
+  def test_find_range_on_included_table
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.id' => (1..3) } )
+    assert_equal 2, developers.size
+  end
+
+  def test_find_not_range_on_included_table
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.id_not_in' => (1..3) } )
+    assert_equal 0, developers.size
   end
 
   def test_find_with_like_with_reserved_words
@@ -188,6 +262,13 @@ class FindersTest< TestCaseSuperClass
     assert_equal( 1, developers.size )
   end
 
+  def test_find_with_regex_on_included_table
+    vac_addr = Address.find(3)
+    developers = Developer.find( :all, :include => :addresses, :conditions => { 'addresses.city' => /arlev/ } )
+    assert_equal 1, developers.size
+    assert_equal vac_addr, developers.first.addresses.first
+  end
+
   def test_find_using_regexp_with_reserved_words
     Group.destroy_all
     g1 = Group.create!(:order => "abc")
@@ -237,6 +318,20 @@ class FindersTest< TestCaseSuperClass
     setup_time
     books = Book.find( :all, :conditions=>{ :created_at_gt => Time.local(2007, 01, 01, 21, 38, 0) } )
     assert_equal 2, books.size
+  end
+
+  def test_find_greater_than_time_on_included_table
+    t = Team.find( :all, :include => :developers, :conditions => { 'developers.created_at_gt' => Time.local(2000, 01, 20, 21, 38, 0) } )
+    assert_equal 2, t.size
+    t = Team.find( :all, :include => :developers, :conditions => { 'developers.created_at_gt' => Time.local(2008, 01, 20, 21, 38, 0) } )
+    assert_equal 1, t.size
+  end
+
+  def test_find_less_than_time_on_included_table
+    t = Team.find( :all, :include => :developers, :conditions => { 'developers.created_at_lt' => Time.local(2009, 01, 20, 21, 38, 0) } )
+    assert_equal 2, t.size
+    t = Team.find( :all, :include => :developers, :conditions => { 'developers.created_at_lt' => Time.local(2008, 01, 17, 21, 38, 0) } )
+    assert_equal 1, t.size
   end
 
   def test_find_greater_than_time_with_reserved_words
@@ -514,5 +609,5 @@ class FindersTest< TestCaseSuperClass
     assert_equal Book.find(:first), Book.find(:first, :conditions => [""])
     assert_equal Book.find(:first), Book.find(:first, :conditions => ["",{}])
   end
-    
+
 end

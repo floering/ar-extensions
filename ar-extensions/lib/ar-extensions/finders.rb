@@ -67,7 +67,12 @@ class ActiveRecord::Base
           result = ActiveRecord::Extensions.process( key, val, self )
           if result
             conditions << result.sql
-            values.push( result.value ) unless result.value.nil?
+#            values.push( result.value ) unless result.value.nil?
+            if result.value.is_a?(Array) and result.multi
+              values += result.value
+            else
+              values << result.value unless result.value.nil?
+            end
           else
             # Extract table name from qualified attribute names.
             attr = key.to_s

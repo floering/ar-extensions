@@ -1,0 +1,6 @@
+first_team:
+  id: 1
+  name: "team 1"
+second_team:
+  id: 2
+  name: "team 2"

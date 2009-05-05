@@ -111,7 +111,7 @@ require 'forwardable'
 #
 module ActiveRecord::Extensions 
   
-  Result = Struct.new( :sql, :value )
+  Result = Struct.new( :sql, :value, :multi )
 
   # ActiveRecored::Extensions::Registry is used to register finder extensions.
   # Extensions are processed in last in first out order, like a stack.
@@ -180,7 +180,7 @@ module ActiveRecord::Extensions
       if val.is_a?( Array )
         match_data = key.to_s.match( NOT_EQUAL_RGX )
         key = match_data.captures[0] if match_data
-        str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( key )} " +
+        str = "#{caller.connection.quote_table_name( key )} " +
           (match_data ? 'NOT ' : '') + "IN( ? )"
         return Result.new( str, val )
       end
@@ -213,11 +213,20 @@ module ActiveRecord::Extensions
     end
     
     def self.process_without_suffix( key, val, caller )
-      return nil unless caller.columns_hash.has_key?( key )
-      if val.nil?
-        str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( key )} is ?"
+      cmpop = val.nil? ? " is " : "="
+      if caller.columns_hash.has_key?( key )
+        str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( key )}#{cmpop}?"
+      elsif key.class == "String"
+        (table, field) = key.split(/\./)
+        assoc_class = eval caller.reflect_on_association(table.to_sym).class_name
+        if assoc_class.columns_hash.has_key?(field)
+          str = "#{caller.connection.quote_table_name( key )}" + 
+          cmpop + "?"
+        else
+          return nil
+        end
       else
-        str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( key )}=?" 
+        return nil
       end
       Result.new( str, val )
     end
@@ -228,9 +237,20 @@ module ActiveRecord::Extensions
         match_data = key.to_s.match( /(.+)_#{k}$/ )
         if match_data
           fieldname = match_data.captures[0]
-          return nil unless caller.columns_hash.has_key?( fieldname )
-          str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( fieldname )} " +
+          if caller.columns_hash.has_key?( fieldname )
+            str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( fieldname )} " +
             "#{v} #{caller.connection.quote( val, caller.columns_hash[ fieldname ] )} "
+          else 
+            (table, field) = fieldname.split(/\./)
+            return nil unless caller.reflect_on_association(table.to_sym)
+            assoc_class = eval caller.reflect_on_association(table.to_sym).class_name
+            if assoc_class.columns_hash.has_key?(field)
+              str = "#{caller.connection.quote_table_name( fieldname )} " +
+              "#{v} #{caller.connection.quote( val, assoc_class.columns_hash[ field ] )} "
+            else
+              return nil
+            end
+          end
           return Result.new( str, nil )
         end
       end
@@ -257,34 +277,30 @@ module ActiveRecord::Extensions
     ENDS_WITH_RGX =  /(.+)_ends_with$/
     def self.process( key, val, caller )
       values = [*val]
+      result_values = []
       case key.to_s
       when LIKE_RGX
         str = values.collect do |v|
-          "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( $1 )} LIKE " +
-            "#{caller.connection.quote( '%%' + v + '%%', caller.columns_hash[ $1 ] )} "
+          result_values << '%' + v + '%'
+          "#{caller.connection.quote_table_name( $1 )} LIKE ? "
         end
       when STARTS_WITH_RGX
         str = values.collect do |v|
-           "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( $1 )} LIKE " +
-            "#{caller.connection.quote( v + '%%', caller.columns_hash[ $1 ] )} "
+          result_values << v + '%'
+          "#{caller.connection.quote_table_name( $1 )} LIKE ? "
         end
       when ENDS_WITH_RGX
         str = values.collect do |v|
-           "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( $1 )} LIKE " +
-            "#{caller.connection.quote( '%%' + v, caller.columns_hash[ $1 ] )} "
+          result_values << '%' + v
+          "#{caller.connection.quote_table_name( $1 )} LIKE ? "
         end
       else
         return nil
       end
 
       str = str.join(' OR ')
-      result_values = []
-      str.gsub!(/'((%%)?([^\?]*\?[^%]*|[^%]*%[^%]*)(%%)?)'/) do |match|
-        result_values << $2
-        '?'
-      end
       result_values = nil if result_values.empty?
-      return Result.new(str , result_values)
+      return Result.new(str , result_values, true)
     end
   end
 
@@ -312,13 +328,13 @@ module ActiveRecord::Extensions
       if val.is_a?( Range )
         match_data = key.to_s.match( NOT_IN_RGX )
         key = match_data.captures[0] if match_data
-        fieldname = caller.connection.quote_column_name( key )
+        fieldname = caller.connection.quote_table_name( key )
         min = caller.connection.quote( val.first, caller.columns_hash[ key ] )
         max = caller.connection.quote( val.last, caller.columns_hash[ key ] )
         str = if val.exclude_end?
-          "#{match_data ? 'NOT ' : '' }(#{caller.quoted_table_name}.#{fieldname} >= #{min} AND #{caller.quoted_table_name}.#{fieldname} < #{max})"
+          "#{match_data ? 'NOT ' : '' }(#{fieldname} >= #{min} AND #{fieldname} < #{max})"
         else 
-          "#{caller.quoted_table_name}.#{fieldname} #{match_data ? 'NOT ' : '' } BETWEEN #{min} AND #{max}"
+          "#{fieldname} #{match_data ? 'NOT ' : '' } BETWEEN #{min} AND #{max}"
         end
         
         return Result.new( str, nil )
@@ -373,7 +389,7 @@ module ActiveRecord::Extensions
         negate = true
         str = match_data.captures[0]
       end      
-      fieldname = caller.connection.quote_column_name( str )
+      fieldname = caller.connection.quote_table_name( str )
       RegexpResult.new( fieldname, negate )
     end
     
@@ -387,7 +403,7 @@ module ActiveRecord::Extensions
     def self.process( key, val, caller )
       return nil unless val.is_a?( Regexp )
       r = field_result( key, caller )
-      Result.new( "#{caller.quoted_table_name}.#{r.fieldname} #{r.negate? ? 'NOT ':''} REGEXP ?", val )
+      Result.new( "#{r.fieldname} #{r.negate? ? 'NOT ':''} REGEXP ?", val )
     end
     
   end
@@ -402,7 +418,7 @@ module ActiveRecord::Extensions
     def self.process( key, val, caller )
       return nil unless val.is_a?( Regexp )
       r = field_result( key, caller )
-      return Result.new( "#{caller.quoted_table_name}.#{r.fieldname} #{r.negate? ? '!~ ':'~'} ?", val )
+      return Result.new( "#{r.fieldname} #{r.negate? ? '!~ ':'~'} ?", val )
     end
 
   end
@@ -415,7 +431,7 @@ module ActiveRecord::Extensions
     def self.process( key, val, caller )
       return nil unless val.is_a?( Regexp )
       r = field_result( key, caller )
-      return Result.new( "#{r.negate? ? ' NOT ':''} REGEXP_LIKE(#{caller.quoted_table_name}.#{r.fieldname} , ?)", val )
+      return Result.new( "#{r.negate? ? ' NOT ':''} REGEXP_LIKE(#{r.fieldname} , ?)", val )
     end
 
   end
@@ -463,12 +479,29 @@ module ActiveRecord::Extensions
     end
     
     def self.process_without_suffix( key, val, caller )
-      return nil unless caller.columns_hash.has_key?( key )
-      if val.nil?
-        str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( key )} IS NULL"
+      if caller.columns_hash.has_key?( key )
+        if val.nil?
+          str = "#{caller.connection.quote_table_name( key )} IS NULL"
+        else
+          str = "#{caller.connection.quote_table_name( key )}=" +
+            "#{caller.connection.quote( val.to_s(:db), caller.columns_hash[ key ] )} "
+        end
+      elsif key.class == "String"
+        (table, field) = key.split(/\./)
+        assoc_class = eval caller.reflect_on_association(table.to_sym).class_name
+        if assoc_class.columns_hash.has_key?(field)
+          if val.nil?
+            str = "#{caller.connection.quote_table_name( key )}" + 
+              " IS NULL"
+          else
+            str = "#{caller.connection.quote_table_name( key )}=" + 
+              "#{caller.connection.quote( val.to_s(:db), assoc_class.columns_hash[ field ] )} "
+          end
+        else
+          return nil
+        end
       else
-        str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( key )}=" +
-          "#{caller.connection.quote( val.to_s(:db), caller.columns_hash[ key ] )} "
+        return nil
       end
       Result.new( str, nil )
     end
@@ -478,18 +511,29 @@ module ActiveRecord::Extensions
         match_data = key.to_s.match( /(.+)_#{k}$/ )
         if match_data
           fieldname = match_data.captures[0]
-          return nil unless caller.columns_hash.has_key?( fieldname )
-          str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( fieldname )} " +
-            "#{v} #{caller.connection.quote( val.to_s(:db), caller.columns_hash[ fieldname ] )} "
+          if caller.columns_hash.has_key?( fieldname )
+            str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( fieldname )} " +
+              "#{v} #{caller.connection.quote( val.to_s(:db), caller.columns_hash[ fieldname ] )} "
+          else
+            (table, field) = fieldname.split(/\./)
+            reflect = caller.reflect_on_association(table.to_sym)
+            reflect ||= caller.reflect_on_association(table.gsub(/s$/, '').to_sym)
+            return nil unless reflect
+            assoc_class = eval reflect.class_name
+            if assoc_class.columns_hash.has_key?(field)
+              str = "#{caller.connection.quote_table_name( fieldname )} " +
+              "#{v} #{caller.connection.quote( val.to_s(:db), assoc_class.columns_hash[ field ] )} "
+            else
+              return nil
+            end
+          end
           return Result.new( str, nil )
         end
       end
       nil
     end
 
-
-end
-  
+  end
 
   register Comparison, :adapters=>:all
   register ArrayExt, :adapters=>:all  
