@@ -216,15 +216,18 @@ module ActiveRecord::Extensions
       cmpop = val.nil? ? " is " : "="
       if caller.columns_hash.has_key?( key )
         str = "#{caller.quoted_table_name}.#{caller.connection.quote_column_name( key )}#{cmpop}?"
-      elsif key.class == "String"
-        (table, field) = key.split(/\./)
-        assoc_class = eval caller.reflect_on_association(table.to_sym).class_name
-        if assoc_class.columns_hash.has_key?(field)
-          str = "#{caller.connection.quote_table_name( key )}" + 
-          cmpop + "?"
-        else
-          return nil
-        end
+ #     elsif key.class == String
+ #       (table, field) = key.split(/\./)
+ #       assoc_class = eval caller.reflect_on_association(table.to_sym).class_name
+ #       if assoc_class.columns_hash.has_key?(field)
+ #         str = "#{caller.connection.quote_table_name( key )}" + 
+ #         cmpop + "?"
+ #       else
+ #         return nil
+ #       end
+      elsif SUFFIX_MAP[key.to_s.match( /([^_]*)$/ )[0]] == nil
+        str = "#{caller.connection.quote_table_name( key )}" + 
+        cmpop + "?"
       else
         return nil
       end
@@ -242,14 +245,15 @@ module ActiveRecord::Extensions
             "#{v} #{caller.connection.quote( val, caller.columns_hash[ fieldname ] )} "
           else 
             (table, field) = fieldname.split(/\./)
-            return nil unless caller.reflect_on_association(table.to_sym)
-            assoc_class = eval caller.reflect_on_association(table.to_sym).class_name
-            if assoc_class.columns_hash.has_key?(field)
+            # Can't reflect on an association because table might be an included table (so it is an association of an association)
+#            return nil unless caller.reflect_on_association(table.to_sym)
+#            assoc_class = eval caller.reflect_on_association(table.to_sym).class_name
+#            if assoc_class.columns_hash.has_key?(field)
               str = "#{caller.connection.quote_table_name( fieldname )} " +
-              "#{v} #{caller.connection.quote( val, assoc_class.columns_hash[ field ] )} "
-            else
-              return nil
-            end
+              "#{v} #{caller.connection.quote( val )} "
+#            else
+#              return nil
+#            end
           end
           return Result.new( str, nil )
         end
@@ -486,7 +490,8 @@ module ActiveRecord::Extensions
           str = "#{caller.connection.quote_table_name( key )}=" +
             "#{caller.connection.quote( val.to_s(:db), caller.columns_hash[ key ] )} "
         end
-      elsif key.class == "String"
+      elsif key.class == String
+      # note this is also broken wrt included associations
         (table, field) = key.split(/\./)
         assoc_class = eval caller.reflect_on_association(table.to_sym).class_name
         if assoc_class.columns_hash.has_key?(field)
